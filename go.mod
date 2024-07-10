@@ -4,7 +4,7 @@ go 1.21.3
 
 require (
 	github.com/gocolly/colly v1.2.0
-	github.com/ledongthuc/pdf v0.0.0-20240201131950-da5b75280b06
+	github.com/romanpickl/pdf v0.0.0-20240314090751-a2a84ec735c3
 )
 
 require (

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gocolly/colly"
-	"github.com/ledongthuc/pdf"
+	"github.com/romanpickl/pdf"
 )
 
 type WebScrape struct {
@@ -27,11 +27,14 @@ type LotteryResults struct {
 	Results     map[string]map[string][]string `json:"results"`
 }
 
-var resultsFile = "results.json"
-var lotteryResults LotteryResults
-var lotteryListCache []WebScrape
+var (
+	lotteryResults   LotteryResults
+	lotteryListCache []WebScrape
 
-const (
+	numbersRegex      = regexp.MustCompile(`\d+`)
+	alphanumericRegex = regexp.MustCompile(`\[([A-Z]+ \d+)\]`)
+	seriesRegex       = regexp.MustCompile(`\[([A-Z])\]`)
+
 	headerPattern             = `KERALA.*?( 1st)`
 	footerPattern             = `Page \d  IT Support : NIC Kerala  \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}`
 	EndFooterPattern          = `The prize winners?.*`
@@ -43,24 +46,23 @@ const (
 	prizePositionString       = `((\d(st|rd|nd|th))|Cons)`
 	prizeString               = `(Prize Rs :\d+/-)|(Prize-Rs :\d+/-)`
 	seriesSelection           = `(?:\[)(.)`
+
+	resultsFile = "results.json"
 )
 
 func scheduleDailyCheck() {
 	go func() {
+		loc, err := time.LoadLocation("Asia/Kolkata")
+		if err != nil {
+			log.Fatalf("Failed to load IST location: %v", err)
+		}
 		for {
-			loc, err := time.LoadLocation("Asia/Kolkata")
-			if err != nil {
-				log.Fatalf("Failed to load IST location: %v", err)
-			}
 			now := time.Now().In(loc)
-			next3pm := time.Date(now.Year(), now.Month(), now.Day()+1, 15, 0, 0, 0, loc)
 			today3pm := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, loc)
-			if now.Before(today3pm) {
-				next3pm = today3pm
+			if now.After(today3pm) {
+				checkAndRefreshData()
 			}
-			log.Println("Checking if the data is outdated...")
-			checkAndRefreshData()
-			time.Sleep(time.Until(next3pm))
+			time.Sleep(time.Until(today3pm.Add(24 * time.Hour)))
 		}
 	}()
 }
@@ -81,26 +83,26 @@ func loadDataFromFile(filename string, data interface{}) error {
 	return json.Unmarshal(jsonData, data)
 }
 
-func crawlAndSaveResults() error {
-	lotteryList := getLotteryList()
-	results := make(map[string]map[string][]string)
+func crawlAndSaveResults(firstVisit bool) error {
+	lotteryList := getLotteryList(firstVisit)
+	if len(lotteryList) == 0 {
+		return fmt.Errorf("failed to fetch lottery list")
+	}
+	lotteryResults.LastUpdated, _ = time.Parse("02/01/2006", lotteryList[0].LotteryDate)
+	lotteryListCache = lotteryList
 
+	results := make(map[string]map[string][]string)
 	for _, lottery := range lotteryList {
 		if lottery.LotteryName == "" {
 			continue
 		}
 
 		resp, err := http.Get(lottery.PdfLink)
-		if err != nil {
+		if err != nil || resp.StatusCode != http.StatusOK {
 			log.Printf("Failed to download PDF for %s: %v", lottery.LotteryName, err)
 			continue
 		}
 		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("Bad status downloading PDF for %s: %s", lottery.LotteryName, resp.Status)
-			continue
-		}
 
 		content, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -114,25 +116,23 @@ func crawlAndSaveResults() error {
 			continue
 		}
 
-		lotteryResults := parseLotteryNumbers(text)
-		results[lottery.LotteryName] = lotteryResults
+		results[lottery.LotteryName] = parseLotteryNumbers(text)
 	}
 
-	lotteryResults := LotteryResults{
-		LastUpdated: time.Now(),
-		Results:     results,
+	lotteryResults.Results = results
+	if len(lotteryResults.Results) > 0 {
+		if err := saveDataToFile(resultsFile, lotteryResults); err != nil {
+			log.Printf("Failed to save lottery results: %v", err)
+		}
+	} else {
+		log.Println("No data found, retrying in 10 minutes...")
+		time.Sleep(time.Minute * 10)
+		return crawlAndSaveResults(firstVisit)
 	}
-
-	err := saveDataToFile(resultsFile, lotteryResults)
-	if err != nil {
-		log.Printf("Failed to save lottery results: %v", err)
-	}
-
 	return nil
 }
 
 func checkAndRefreshData() {
-
 	loc, err := time.LoadLocation("Asia/Kolkata")
 	if err != nil {
 		log.Fatalf("Failed to load IST location: %v", err)
@@ -141,38 +141,54 @@ func checkAndRefreshData() {
 	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, loc)
 	if lotteryResults.LastUpdated.Before(today3pm) && now.After(today3pm) {
 		log.Println("Data is outdated, refreshing...")
-		if err := crawlAndSaveResults(); err != nil {
+		if err := crawlAndSaveResults(false); err != nil {
 			log.Printf("Failed to refresh data: %v", err)
 		}
-		log.Println("Data has been refreshed...")
+		log.Println("Data has been refreshed")
 	} else {
 		log.Println("Data is up-to-date")
 	}
 }
 
-func getLotteryList() []WebScrape {
-	c := colly.NewCollector()
-	c.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+func getLotteryList(firstVisit bool) []WebScrape {
 	var datas []WebScrape
+	c := colly.NewCollector(colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"))
 
 	c.OnHTML("tr", func(e *colly.HTMLElement) {
 		href := e.ChildAttr("td a", "href")
 		text := e.ChildText("td:first-child")
 		text2 := e.ChildText("td:nth-child(2)")
-		datas = append(datas, WebScrape{LotteryName: text, LotteryDate: text2, PdfLink: href})
+		if text != "" {
+			datas = append(datas, WebScrape{LotteryName: text, LotteryDate: text2, PdfLink: href})
+		}
 	})
 
-	c.Visit("https://statelottery.kerala.gov.in/index.php/lottery-result-view")
+	if firstVisit {
+		c.Visit("https://statelottery.kerala.gov.in/index.php/lottery-result-view")
+		return datas
+	}
+
+	for {
+		c.Visit("https://statelottery.kerala.gov.in/index.php/lottery-result-view")
+		if len(datas) == 0 {
+			log.Println("Error fetching lottery list, retrying...")
+			time.Sleep(time.Minute * 10)
+			continue
+		}
+		latestDate, err := time.Parse("02/01/2006", datas[0].LotteryDate)
+		if err == nil && (latestDate.Day() >= time.Now().Local().Day() || lotteryResults.LastUpdated.Day() < latestDate.Day()) {
+			lotteryResults.LastUpdated = latestDate
+			break
+		}
+		log.Println("Latest data not available, checking again in 10 minutes...")
+		time.Sleep(time.Minute * 10)
+	}
 	return datas
 }
 
 func parseLotteryNumbers(input string) map[string][]string {
 	result := make(map[string][]string)
 	parts := strings.Split(input, "<")
-
-	numbersRegex := regexp.MustCompile(`\d+`)
-	alphanumericRegex := regexp.MustCompile(`\[([A-Z]+ \d+)\]`)
-	seriesRegex := regexp.MustCompile(`\[([A-Z])\]`)
 
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -205,72 +221,26 @@ func parseLotteryNumbers(input string) map[string][]string {
 			}
 		}
 	}
-
 	return result
 }
 
-func DownloadFile(url, filePath string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status: %s", resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	err = os.WriteFile(filePath, body, 0644)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func ProcessTextContent(input string) (string, error) {
-	result := `< Series >     [%s] %s`
 	patternsToRemove := []string{headerPattern, footerPattern, bulletPattern, EndFooterPattern, trailingWhiteSpacePattern, locationString, podiumSplit, prizeString}
-	patternsToSeparate := []string{lotteryTicketFull}
-
 	for _, pattern := range patternsToRemove {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return "", err
 		}
-		if pattern == headerPattern {
-			input = re.ReplaceAllString(input, "1st")
-		}
 		input = re.ReplaceAllString(input, "")
 	}
+	input = regexp.MustCompile(prizePositionString).ReplaceAllString(input, ` < $0 > `)
+	input = regexp.MustCompile(lotteryTicketFull).ReplaceAllString(input, "[$0]")
 
-	for _, pattern := range patternsToSeparate {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return "", err
-		}
-		input = re.ReplaceAllString(input, "[$0]")
-	}
-
-	re, err := regexp.Compile(prizePositionString)
-	if err != nil {
-		return "", err
-	}
-	input = re.ReplaceAllString(input, ` < $0 > `)
-
-	re = regexp.MustCompile(`(?:\[)(.)`)
-	seriesMatches := re.FindAllStringSubmatch(input, -1)
+	seriesMatches := regexp.MustCompile(seriesSelection).FindAllStringSubmatch(input, -1)
 	if len(seriesMatches) > 0 {
 		series := seriesMatches[0][1]
-		input = fmt.Sprintf(result, series, input)
-
+		input = fmt.Sprintf(`< Series > [%s] %s`, series, input)
 	}
-
 	return input, nil
 }
 
@@ -281,8 +251,7 @@ func ExtractTextFromPDFContent(content []byte) (string, error) {
 		return "", err
 	}
 
-	totalPage := r.NumPage()
-	for pageIndex := 1; pageIndex <= totalPage; pageIndex++ {
+	for pageIndex := 1; pageIndex <= r.NumPage(); pageIndex++ {
 		p := r.Page(pageIndex)
 		if p.V.IsNull() {
 			continue
@@ -296,12 +265,7 @@ func ExtractTextFromPDFContent(content []byte) (string, error) {
 		}
 	}
 
-	result, err := ProcessTextContent(finalString)
-	if err != nil {
-		return "", err
-	}
-
-	return result, nil
+	return ProcessTextContent(finalString)
 }
 
 func getAllResults(w http.ResponseWriter, r *http.Request) {
@@ -338,11 +302,10 @@ func checkTickets(w http.ResponseWriter, r *http.Request) {
 
 func checkWinningTickets(results map[string][]string, tickets []string) map[string][]string {
 	winners := make(map[string][]string)
-
 	for _, ticket := range tickets {
 		series := string(ticket[0])
 		currentSeries := results["Series"]
-		if currentSeries[0] != series {
+		if len(currentSeries) == 0 || currentSeries[0] != series {
 			continue
 		}
 		for pos, nums := range results {
@@ -357,28 +320,26 @@ func checkWinningTickets(results map[string][]string, tickets []string) map[stri
 			}
 		}
 	}
-
 	return winners
 }
 
 func main() {
-	// Load data on startup
 	if err := loadDataFromFile(resultsFile, &lotteryResults); err != nil {
 		log.Printf("%s not found or failed to load, running initial crawl...", resultsFile)
-		if err := crawlAndSaveResults(); err != nil {
+		if err := crawlAndSaveResults(true); err != nil {
 			log.Fatalf("Failed to crawl and save results: %v", err)
 		}
 	} else {
 		log.Printf("Loaded existing data from %s", resultsFile)
+		// Perform a check for new lotteries on startup
+		log.Println("Checking for new lotteries on startup...")
+		if err := crawlAndSaveResults(false); err != nil {
+			log.Printf("Failed to check for new lotteries on startup: %v", err)
+		}
 	}
 
-	// Populate the lottery list cache
-	lotteryListCache = getLotteryList()
-
-	// Schedule the daily check for outdated data
 	scheduleDailyCheck()
 
-	// Define the API endpoints
 	http.HandleFunc("/results", getAllResults)
 	http.HandleFunc("/lotteries", listLotteries)
 	http.HandleFunc("/check-tickets", checkTickets)
