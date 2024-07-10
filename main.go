@@ -125,8 +125,8 @@ func crawlAndSaveResults(firstVisit bool) error {
 			log.Printf("Failed to save lottery results: %v", err)
 		}
 	} else {
-		log.Println("No data found, retrying in 10 minutes...")
-		time.Sleep(time.Minute * 10)
+		log.Println("No data found, retrying in 15 minutes...")
+		time.Sleep(time.Minute * 15)
 		return crawlAndSaveResults(firstVisit)
 	}
 	return nil
@@ -152,6 +152,8 @@ func checkAndRefreshData() {
 
 func getLotteryList(firstVisit bool) []WebScrape {
 	var datas []WebScrape
+	now := time.Now().Local()
+	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, now.Location())
 	c := colly.NewCollector(colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"))
 
 	c.OnHTML("tr", func(e *colly.HTMLElement) {
@@ -176,12 +178,15 @@ func getLotteryList(firstVisit bool) []WebScrape {
 			continue
 		}
 		latestDate, err := time.Parse("02/01/2006", datas[0].LotteryDate)
-		if err == nil && (latestDate.Day() >= time.Now().Local().Day() || lotteryResults.LastUpdated.Day() < latestDate.Day()) {
+		if err == nil && (latestDate.Day() >= now.Day() || lotteryResults.LastUpdated.Day() < latestDate.Day()) {
 			lotteryResults.LastUpdated = latestDate
 			break
+		} else if latestDate.Day() <= now.Day() && now.Before(today3pm) {
+			log.Println("current data is up to date...")
+			break
 		}
-		log.Println("Latest data not available, checking again in 10 minutes...")
-		time.Sleep(time.Minute * 10)
+		log.Println("Latest data not available, checking again in 15 minutes...")
+		time.Sleep(time.Minute * 15)
 	}
 	return datas
 }
