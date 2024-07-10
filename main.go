@@ -23,7 +23,7 @@ type WebScrape struct {
 }
 
 type LotteryResults struct {
-	LastUpdated time.Time                      `json:"last_updated"`
+	LastUpdated time.Time                      `json:"latest_draw"`
 	Results     map[string]map[string][]string `json:"results"`
 }
 
@@ -230,6 +230,9 @@ func ProcessTextContent(input string) (string, error) {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return "", err
+		}
+		if pattern == headerPattern {
+			input = re.ReplaceAllString(input, "1st")
 		}
 		input = re.ReplaceAllString(input, "")
 	}
