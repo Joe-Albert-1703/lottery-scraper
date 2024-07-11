@@ -48,6 +48,9 @@ var (
 	seriesSelection           = `(?:\[)(.)`
 
 	resultsFile = "results.json"
+
+	contentHeader = "Content-Type"
+	contentType   = "application/json"
 )
 
 func scheduleDailyCheck() {
@@ -201,32 +204,47 @@ func parseLotteryNumbers(input string) map[string][]string {
 			continue
 		}
 
-		pos := strings.TrimSpace(strings.Split(part, ">")[0])
-		numbersPart := strings.TrimSpace(strings.SplitN(part, ">", 2)[1])
+		pos, numbersPart := parsePositionAndNumbersPart(part)
+		addSeriesMatches(result, pos, numbersPart)
+		addAlphanumericMatches(result, pos, numbersPart)
+		addNumericMatches(result, pos, numbersPart)
+	}
 
-		seriesMatches := seriesRegex.FindAllStringSubmatch(numbersPart, -1)
-		for _, match := range seriesMatches {
-			result[pos] = append(result[pos], match[1])
-		}
+	return result
+}
 
-		alphanumericMatches := alphanumericRegex.FindAllStringSubmatch(numbersPart, -1)
-		for _, match := range alphanumericMatches {
-			result[pos] = append(result[pos], match[1])
-		}
+func parsePositionAndNumbersPart(part string) (string, string) {
+	pos := strings.TrimSpace(strings.Split(part, ">")[0])
+	numbersPart := strings.TrimSpace(strings.SplitN(part, ">", 2)[1])
+	return pos, numbersPart
+}
 
-		numbersPart = alphanumericRegex.ReplaceAllString(numbersPart, "")
-		numbers := numbersRegex.FindAllString(numbersPart, -1)
-		for _, num := range numbers {
-			for i := 0; i < len(num); i += 4 {
-				end := i + 4
-				if end > len(num) {
-					end = len(num)
-				}
-				result[pos] = append(result[pos], num[i:end])
+func addSeriesMatches(result map[string][]string, pos, numbersPart string) {
+	seriesMatches := seriesRegex.FindAllStringSubmatch(numbersPart, -1)
+	for _, match := range seriesMatches {
+		result[pos] = append(result[pos], match[1])
+	}
+}
+
+func addAlphanumericMatches(result map[string][]string, pos, numbersPart string) {
+	alphanumericMatches := alphanumericRegex.FindAllStringSubmatch(numbersPart, -1)
+	for _, match := range alphanumericMatches {
+		result[pos] = append(result[pos], match[1])
+	}
+}
+
+func addNumericMatches(result map[string][]string, pos, numbersPart string) {
+	numbersPart = alphanumericRegex.ReplaceAllString(numbersPart, "")
+	numbers := numbersRegex.FindAllString(numbersPart, -1)
+	for _, num := range numbers {
+		for i := 0; i < len(num); i += 4 {
+			end := i + 4
+			if end > len(num) {
+				end = len(num)
 			}
+			result[pos] = append(result[pos], num[i:end])
 		}
 	}
-	return result
 }
 
 func ProcessTextContent(input string) (string, error) {
@@ -277,17 +295,17 @@ func ExtractTextFromPDFContent(content []byte) (string, error) {
 }
 
 func getAllResults(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(contentHeader, contentType)
 	json.NewEncoder(w).Encode(lotteryResults)
 }
 
 func listLotteries(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(contentHeader, contentType)
 	json.NewEncoder(w).Encode(lotteryListCache)
 }
 
 func checkTickets(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(contentHeader, contentType)
 	var tickets []string
 	if err := json.NewDecoder(r.Body).Decode(&tickets); err != nil {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
@@ -310,25 +328,40 @@ func checkTickets(w http.ResponseWriter, r *http.Request) {
 
 func checkWinningTickets(results map[string][]string, tickets []string) map[string][]string {
 	winners := make(map[string][]string)
+	series := results["Series"]
+
 	for _, ticket := range tickets {
-		series := string(ticket[0])
-		currentSeries := results["Series"]
-		if len(currentSeries) == 0 || currentSeries[0] != series {
+		if !isMatchingSeries(series, ticket) {
 			continue
 		}
-		for pos, nums := range results {
-			if pos == "Series" {
-				continue
-			}
-			for _, num := range nums {
-				if strings.Contains(ticket, num) {
-					winners[pos] = append(winners[pos], ticket)
-					break
-				}
-			}
+		checkTicketForWinningPositions(ticket, results, winners)
+	}
+
+	return winners
+}
+
+func isMatchingSeries(series []string, ticket string) bool {
+	return len(series) > 0 && series[0] == string(ticket[0])
+}
+
+func checkTicketForWinningPositions(ticket string, results map[string][]string, winners map[string][]string) {
+	for pos, nums := range results {
+		if pos == "Series" {
+			continue
+		}
+		if isWinningTicket(ticket, nums) {
+			winners[pos] = append(winners[pos], ticket)
 		}
 	}
-	return winners
+}
+
+func isWinningTicket(ticket string, nums []string) bool {
+	for _, num := range nums {
+		if strings.Contains(ticket, num) {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
