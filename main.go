@@ -61,7 +61,7 @@ func scheduleDailyCheck() {
 		}
 		for {
 			now := time.Now().In(loc)
-			today3pm := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, loc)
+			today3pm := time.Date(now.Year(), now.Month(), now.Day(), 16, 0, 0, 0, loc)
 			if now.After(today3pm) {
 				checkAndRefreshData()
 			}
@@ -126,6 +126,8 @@ func crawlAndSaveResults(firstVisit bool) error {
 	if len(lotteryResults.Results) > 0 {
 		if err := saveDataToFile(resultsFile, lotteryResults); err != nil {
 			log.Printf("Failed to save lottery results: %v", err)
+		} else {
+			log.Println("Refreshed lottery results")
 		}
 	} else {
 		log.Println("No data found, retrying in 15 minutes...")
@@ -365,26 +367,29 @@ func isWinningTicket(ticket string, nums []string) bool {
 }
 
 func main() {
-	if err := loadDataFromFile(resultsFile, &lotteryResults); err != nil {
-		log.Printf("%s not found or failed to load, running initial crawl...", resultsFile)
-		if err := crawlAndSaveResults(true); err != nil {
-			log.Fatalf("Failed to crawl and save results: %v", err)
-		}
-	} else {
-		log.Printf("Loaded existing data from %s", resultsFile)
-		// Perform a check for new lotteries on startup
-		log.Println("Checking for new lotteries on startup...")
-		if err := crawlAndSaveResults(false); err != nil {
-			log.Printf("Failed to check for new lotteries on startup: %v", err)
-		}
-	}
+    if err := loadDataFromFile(resultsFile, &lotteryResults); err != nil {
+        log.Printf("%s not found or failed to load, running initial crawl...", resultsFile)
+        if err := crawlAndSaveResults(true); err != nil {
+            log.Fatalf("Failed to crawl and save results: %v", err)
+        }
+    } else {
+        log.Printf("Loaded existing data from %s", resultsFile)
+        log.Println("Checking for new lotteries on startup...")
+        if err := crawlAndSaveResults(false); err != nil {
+            log.Printf("Failed to check for new lotteries on startup: %v", err)
+        }
+    }
 
-	scheduleDailyCheck()
+    scheduleDailyCheck()
 
-	http.HandleFunc("/results", getAllResults)
-	http.HandleFunc("/lotteries", listLotteries)
-	http.HandleFunc("/check-tickets", checkTickets)
+    http.HandleFunc("/results", getAllResults)
+    http.HandleFunc("/lotteries", listLotteries)
+    http.HandleFunc("/check-tickets", checkTickets)
 
-	log.Println("Starting server on :8080...")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+    fs := http.FileServer(http.Dir("./public"))
+    http.Handle("/", fs)
+
+    log.Println("Starting server on :8080...")
+    log.Fatal(http.ListenAndServe(":8080", nil))
 }
+

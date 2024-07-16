@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lottery Results</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <h1>Lottery Results</h1>
+    </header>
+    <main>
+        <section id="latest-results">
+            <h2>Latest Results</h2>
+            <div id="results-container"></div>
+        </section>
+        <section id="lotteries">
+            <h2>Lotteries</h2>
+            <div id="lotteries-container"></div>
+        </section>
+        <section id="check-tickets">
+            <h2>Check Tickets</h2>
+            <form id="ticket-form">
+                <label for="tickets">Enter your ticket numbers (comma separated):</label>
+                <input type="text" id="tickets" name="tickets" required>
+                <button type="submit">Check</button>
+            </form>
+            <div id="winners-container"></div>
+        </section>
+    </main>
+    <script src="script.js"></script>
+</body>
+</html>
