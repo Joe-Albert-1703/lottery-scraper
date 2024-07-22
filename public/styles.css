@@ -163,3 +163,10 @@ a:hover {
     border-radius: 5px;
     border: 2px solid #1F1F1F;
 }
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active{
+    background-color: #2E2E2E !important;
+}

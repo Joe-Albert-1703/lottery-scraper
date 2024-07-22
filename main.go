@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gocolly/colly"
+	"github.com/robfig/cron/v3"
 	"github.com/romanpickl/pdf"
 )
 
@@ -54,20 +55,12 @@ var (
 )
 
 func scheduleDailyCheck() {
-	go func() {
-		loc, err := time.LoadLocation("Asia/Kolkata")
-		if err != nil {
-			log.Fatalf("Failed to load IST location: %v", err)
-		}
-		for {
-			now := time.Now().In(loc)
-			today3pm := time.Date(now.Year(), now.Month(), now.Day(), 16, 0, 0, 0, loc)
-			if now.After(today3pm) {
-				checkAndRefreshData()
-			}
-			time.Sleep(time.Until(today3pm.Add(24 * time.Hour)))
-		}
-	}()
+	c := cron.New(cron.WithLocation(time.FixedZone("IST", 5*60*60+30*60)))
+	_, err := c.AddFunc("15 16 * * *", checkAndRefreshData)
+	if err != nil {
+		log.Fatalf("Failed to schedule cron job: %v", err)
+	}
+	c.Start()
 }
 
 func saveDataToFile(filename string, data interface{}) error {
@@ -122,8 +115,8 @@ func crawlAndSaveResults(firstVisit bool) error {
 		results[lottery.LotteryName] = parseLotteryNumbers(text)
 	}
 
-	lotteryResults.Results = results
-	if len(lotteryResults.Results) > 0 {
+	if len(results) > 0 {
+		lotteryResults.Results = results
 		if err := saveDataToFile(resultsFile, lotteryResults); err != nil {
 			log.Printf("Failed to save lottery results: %v", err)
 		} else {
@@ -143,7 +136,7 @@ func checkAndRefreshData() {
 		log.Fatalf("Failed to load IST location: %v", err)
 	}
 	now := time.Now().In(loc)
-	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, loc)
+	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 16, 15, 0, 0, loc)
 	if lotteryResults.LastUpdated.Before(today3pm) && now.After(today3pm) {
 		log.Println("Data is outdated, refreshing...")
 		if err := crawlAndSaveResults(false); err != nil {
@@ -158,7 +151,7 @@ func checkAndRefreshData() {
 func getLotteryList(firstVisit bool) []WebScrape {
 	var datas []WebScrape
 	now := time.Now().Local()
-	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 15, 0, 0, 0, now.Location())
+	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 16, 15, 0, 0, now.Location())
 	c := colly.NewCollector(colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"))
 
 	c.OnHTML("tr", func(e *colly.HTMLElement) {
@@ -367,29 +360,43 @@ func isWinningTicket(ticket string, nums []string) bool {
 }
 
 func main() {
-    if err := loadDataFromFile(resultsFile, &lotteryResults); err != nil {
-        log.Printf("%s not found or failed to load, running initial crawl...", resultsFile)
-        if err := crawlAndSaveResults(true); err != nil {
-            log.Fatalf("Failed to crawl and save results: %v", err)
-        }
+    // Load existing data from file, if available
+    err := loadDataFromFile(resultsFile, &lotteryResults)
+    if err != nil {
+        log.Printf("%s not found or failed to load, attempting initial crawl...", resultsFile)
     } else {
         log.Printf("Loaded existing data from %s", resultsFile)
+    }
+
+    // Start the server immediately to serve any available data
+    go func() {
+        http.HandleFunc("/results", getAllResults)
+        http.HandleFunc("/lotteries", listLotteries)
+        http.HandleFunc("/check-tickets", checkTickets)
+
+        fs := http.FileServer(http.Dir("./public"))
+        http.Handle("/", fs)
+
+        log.Println("Starting server on :8080...")
+        log.Fatal(http.ListenAndServe(":8080", nil))
+    }()
+
+    // Perform initial crawl and refresh
+    if err == nil {
         log.Println("Checking for new lotteries on startup...")
-        if err := crawlAndSaveResults(false); err != nil {
-            log.Printf("Failed to check for new lotteries on startup: %v", err)
+        if crawlErr := crawlAndSaveResults(false); crawlErr != nil {
+            log.Printf("Failed to check for new lotteries on startup: %v", crawlErr)
+        }
+    } else {
+        if crawlErr := crawlAndSaveResults(true); crawlErr != nil {
+            log.Fatalf("Failed to crawl and save results: %v", crawlErr)
         }
     }
 
+    // Schedule daily checks using cron
     scheduleDailyCheck()
 
-    http.HandleFunc("/results", getAllResults)
-    http.HandleFunc("/lotteries", listLotteries)
-    http.HandleFunc("/check-tickets", checkTickets)
-
-    fs := http.FileServer(http.Dir("./public"))
-    http.Handle("/", fs)
-
-    log.Println("Starting server on :8080...")
-    log.Fatal(http.ListenAndServe(":8080", nil))
+    // Keep the main goroutine alive
+    select {}
 }
 
