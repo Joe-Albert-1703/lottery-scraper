@@ -1,0 +1,1 @@
+This project scrapes the lottery results from https://statelottery.kerala.gov.in/index.php/lottery-result-view and presents the results in a way that makes it easy to check if your tickets won anything 
