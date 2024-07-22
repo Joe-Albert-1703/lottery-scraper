@@ -80,53 +80,89 @@ func loadDataFromFile(filename string, data interface{}) error {
 }
 
 func crawlAndSaveResults(firstVisit bool) error {
-	lotteryList := getLotteryList(firstVisit)
-	if len(lotteryList) == 0 {
-		return fmt.Errorf("failed to fetch lottery list")
+	lotteryList, err := getLotteryList(firstVisit)
+	if err != nil {
+		return fmt.Errorf("failed to fetch lottery list: %w", err)
 	}
+	if len(lotteryList) == 0 {
+		return fmt.Errorf("no lottery list found")
+	}
+
+	// Update last updated date
 	lotteryResults.LastUpdated, _ = time.Parse("02/01/2006", lotteryList[0].LotteryDate)
 	lotteryListCache = lotteryList
 
-	results := make(map[string]map[string][]string)
-	for _, lottery := range lotteryList {
-		if lottery.LotteryName == "" {
-			continue
-		}
-
-		resp, err := http.Get(lottery.PdfLink)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			log.Printf("Failed to download PDF for %s: %v", lottery.LotteryName, err)
-			continue
-		}
-		defer resp.Body.Close()
-
-		content, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Printf("Failed to read PDF content for %s: %v", lottery.LotteryName, err)
-			continue
-		}
-
-		text, err := ExtractTextFromPDFContent(content)
-		if err != nil {
-			log.Printf("Failed to extract text from PDF for %s: %v", lottery.LotteryName, err)
-			continue
-		}
-
-		results[lottery.LotteryName] = parseLotteryNumbers(text)
+	// Process lottery results
+	results, err := processLotteryResults(lotteryList)
+	if err != nil {
+		return err
 	}
 
-	if len(results) > 0 {
-		lotteryResults.Results = results
-		if err := saveDataToFile(resultsFile, lotteryResults); err != nil {
-			log.Printf("Failed to save lottery results: %v", err)
-		} else {
-			log.Println("Refreshed lottery results")
+	// Save results to file
+	if err := saveResults(results); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func processLotteryResults(lotteryList []WebScrape) (map[string]map[string][]string, error) {
+	results := make(map[string]map[string][]string)
+
+	for _, lottery := range lotteryList {
+		if err := processLottery(lottery, results); err != nil {
+			log.Printf("Error processing lottery %s: %v", lottery.LotteryName, err)
 		}
-	} else {
+	}
+
+	if len(results) == 0 {
 		log.Println("No data found, retrying in 15 minutes...")
 		time.Sleep(time.Minute * 15)
-		return crawlAndSaveResults(firstVisit)
+		if lotteryList, err := getLotteryList(false); err == nil && len(lotteryList) > 0 {
+			return processLotteryResults(lotteryList)
+		}
+		return nil, fmt.Errorf("no results found after retry")
 	}
+
+	return results, nil
+}
+
+func processLottery(lottery WebScrape, results map[string]map[string][]string) error {
+	if lottery.LotteryName == "" {
+		return nil
+	}
+
+	resp, err := http.Get(lottery.PdfLink)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download PDF for %s: %v", lottery.LotteryName, err)
+	}
+	defer resp.Body.Close()
+
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read PDF content for %s: %v", lottery.LotteryName, err)
+	}
+
+	text, err := ExtractTextFromPDFContent(content)
+	if err != nil {
+		return fmt.Errorf("failed to extract text from PDF for %s: %v", lottery.LotteryName, err)
+	}
+
+	results[lottery.LotteryName] = parseLotteryNumbers(text)
+	return nil
+}
+
+func saveResults(results map[string]map[string][]string) error {
+	if len(results) == 0 {
+		return fmt.Errorf("no results to save")
+	}
+
+	lotteryResults.Results = results
+	if err := saveDataToFile(resultsFile, lotteryResults); err != nil {
+		return fmt.Errorf("failed to save lottery results: %w", err)
+	}
+
+	log.Println("Refreshed lottery results")
 	return nil
 }
 
@@ -148,7 +184,7 @@ func checkAndRefreshData() {
 	}
 }
 
-func getLotteryList(firstVisit bool) []WebScrape {
+func getLotteryList(firstVisit bool) ([]WebScrape, error) {
 	var datas []WebScrape
 	now := time.Now().Local()
 	today3pm := time.Date(now.Year(), now.Month(), now.Day(), 16, 15, 0, 0, now.Location())
@@ -165,7 +201,7 @@ func getLotteryList(firstVisit bool) []WebScrape {
 
 	if firstVisit {
 		c.Visit("https://statelottery.kerala.gov.in/index.php/lottery-result-view")
-		return datas
+		return datas, nil
 	}
 
 	for {
@@ -176,7 +212,9 @@ func getLotteryList(firstVisit bool) []WebScrape {
 			continue
 		}
 		latestDate, err := time.Parse("02/01/2006", datas[0].LotteryDate)
-		if err == nil && (latestDate.Day() >= now.Day() || lotteryResults.LastUpdated.Day() < latestDate.Day()) {
+		if err != nil {
+			return nil, err
+		} else if err == nil && (latestDate.Day() >= now.Day() || lotteryResults.LastUpdated.Day() < latestDate.Day()) {
 			lotteryResults.LastUpdated = latestDate
 			break
 		} else if latestDate.Day() <= now.Day() && now.Before(today3pm) {
@@ -186,7 +224,7 @@ func getLotteryList(firstVisit bool) []WebScrape {
 		log.Println("Latest data not available, checking again in 15 minutes...")
 		time.Sleep(time.Minute * 15)
 	}
-	return datas
+	return datas, nil
 }
 
 func parseLotteryNumbers(input string) map[string][]string {
@@ -360,43 +398,42 @@ func isWinningTicket(ticket string, nums []string) bool {
 }
 
 func main() {
-    // Load existing data from file, if available
-    err := loadDataFromFile(resultsFile, &lotteryResults)
-    if err != nil {
-        log.Printf("%s not found or failed to load, attempting initial crawl...", resultsFile)
-    } else {
-        log.Printf("Loaded existing data from %s", resultsFile)
-    }
+	// Load existing data from file, if available
+	err := loadDataFromFile(resultsFile, &lotteryResults)
+	if err != nil {
+		log.Printf("%s not found or failed to load, attempting initial crawl...", resultsFile)
+	} else {
+		log.Printf("Loaded existing data from %s", resultsFile)
+	}
 
-    // Start the server immediately to serve any available data
-    go func() {
-        http.HandleFunc("/results", getAllResults)
-        http.HandleFunc("/lotteries", listLotteries)
-        http.HandleFunc("/check-tickets", checkTickets)
+	// Start the server immediately to serve any available data
+	go func() {
+		http.HandleFunc("/results", getAllResults)
+		http.HandleFunc("/lotteries", listLotteries)
+		http.HandleFunc("/check-tickets", checkTickets)
 
-        fs := http.FileServer(http.Dir("./public"))
-        http.Handle("/", fs)
+		fs := http.FileServer(http.Dir("./public"))
+		http.Handle("/", fs)
 
-        log.Println("Starting server on :8080...")
-        log.Fatal(http.ListenAndServe(":8080", nil))
-    }()
+		log.Println("Starting server on :8080...")
+		log.Fatal(http.ListenAndServe(":8080", nil))
+	}()
 
-    // Perform initial crawl and refresh
-    if err == nil {
-        log.Println("Checking for new lotteries on startup...")
-        if crawlErr := crawlAndSaveResults(false); crawlErr != nil {
-            log.Printf("Failed to check for new lotteries on startup: %v", crawlErr)
-        }
-    } else {
-        if crawlErr := crawlAndSaveResults(true); crawlErr != nil {
-            log.Fatalf("Failed to crawl and save results: %v", crawlErr)
-        }
-    }
+	// Perform initial crawl and refresh
+	if err == nil {
+		log.Println("Checking for new lotteries on startup...")
+		if crawlErr := crawlAndSaveResults(false); crawlErr != nil {
+			log.Printf("Failed to check for new lotteries on startup: %v", crawlErr)
+		}
+	} else {
+		if crawlErr := crawlAndSaveResults(true); crawlErr != nil {
+			log.Fatalf("Failed to crawl and save results: %v", crawlErr)
+		}
+	}
 
-    // Schedule daily checks using cron
-    scheduleDailyCheck()
+	// Schedule daily checks using cron
+	scheduleDailyCheck()
 
-    // Keep the main goroutine alive
-    select {}
+	// Keep the main goroutine alive
+	select {}
 }
-
