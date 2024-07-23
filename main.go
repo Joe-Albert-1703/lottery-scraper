@@ -214,7 +214,7 @@ func getLotteryList(firstVisit bool) ([]WebScrape, error) {
 		latestDate, err := time.Parse("02/01/2006", datas[0].LotteryDate)
 		if err != nil {
 			return nil, err
-		} else if err == nil && (latestDate.Day() >= now.Day() || lotteryResults.LastUpdated.Day() < latestDate.Day()) {
+		} else if latestDate.Day() >= now.Day() || lotteryResults.LastUpdated.Day() < latestDate.Day() {
 			lotteryResults.LastUpdated = latestDate
 			break
 		} else if latestDate.Day() <= now.Day() && now.Before(today3pm) {
