@@ -92,7 +92,7 @@ func crawlAndSaveResults(firstVisit bool) error {
 	lotteryResults.LastUpdated, _ = time.Parse("02/01/2006", lotteryList[0].LotteryDate)
 	lotteryListCache = lotteryList
 
-	// Process lottery results
+	// Process lottery results concurrently
 	results, err := processLotteryResults(lotteryList)
 	if err != nil {
 		return err
@@ -106,51 +106,67 @@ func crawlAndSaveResults(firstVisit bool) error {
 	return nil
 }
 
+
 func processLotteryResults(lotteryList []WebScrape) (map[string]map[string][]string, error) {
 	results := make(map[string]map[string][]string)
+	resultChan := make(chan struct {
+		lotteryName string
+		data        map[string][]string
+		err         error
+	}, len(lotteryList))
 
 	for _, lottery := range lotteryList {
-		if err := processLottery(lottery, results); err != nil {
-			log.Printf("Error processing lottery %s: %v", lottery.LotteryName, err)
+		go func(lottery WebScrape) {
+			data, err := processLottery(lottery)
+			resultChan <- struct {
+				lotteryName string
+				data        map[string][]string
+				err         error
+			}{lotteryName: lottery.LotteryName, data: data, err: err}
+		}(lottery)
+	}
+
+	for range lotteryList {
+		result := <-resultChan
+		if result.err != nil {
+			log.Printf("Error processing lottery %s: %v", result.lotteryName, result.err)
+			continue
 		}
+		results[result.lotteryName] = result.data
 	}
 
 	if len(results) == 0 {
-		log.Println("No data found, retrying in 15 minutes...")
-		time.Sleep(time.Minute * 15)
-		if lotteryList, err := getLotteryList(false); err == nil && len(lotteryList) > 0 {
-			return processLotteryResults(lotteryList)
-		}
-		return nil, fmt.Errorf("no results found after retry")
+		return nil, fmt.Errorf("no results found")
 	}
 
 	return results, nil
 }
 
-func processLottery(lottery WebScrape, results map[string]map[string][]string) error {
+
+func processLottery(lottery WebScrape) (map[string][]string, error) {
 	if lottery.LotteryName == "" {
-		return nil
+		return nil, nil
 	}
 
 	resp, err := http.Get(lottery.PdfLink)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download PDF for %s: %v", lottery.LotteryName, err)
+		return nil, fmt.Errorf("failed to download PDF for %s: %v", lottery.LotteryName, err)
 	}
 	defer resp.Body.Close()
 
 	content, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read PDF content for %s: %v", lottery.LotteryName, err)
+		return nil, fmt.Errorf("failed to read PDF content for %s: %v", lottery.LotteryName, err)
 	}
 
 	text, err := ExtractTextFromPDFContent(content)
 	if err != nil {
-		return fmt.Errorf("failed to extract text from PDF for %s: %v", lottery.LotteryName, err)
+		return nil, fmt.Errorf("failed to extract text from PDF for %s: %v", lottery.LotteryName, err)
 	}
 
-	results[lottery.LotteryName] = parseLotteryNumbers(text)
-	return nil
+	return parseLotteryNumbers(text), nil
 }
+
 
 func saveResults(results map[string]map[string][]string) error {
 	if len(results) == 0 {
