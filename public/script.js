@@ -39,7 +39,7 @@ function fetchResults() {
 function createLotteryDiv(lotteryName, results) {
     const lotteryDiv = document.createElement('div');
     lotteryDiv.classList.add('lottery-box');
-    lotteryDiv.style.backgroundColor = '#3E3E3E';
+    lotteryDiv.style.backgroundColor = '#0E0E0E';
     
     const title = document.createElement('div');
     title.classList.add('lottery-title');
