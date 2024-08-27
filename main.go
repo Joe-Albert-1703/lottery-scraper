@@ -44,8 +44,7 @@ var (
 	podiumSplit               = `FOR +.* NUMBERS`
 	lotteryTicketFull         = `[A-Z]{2} \d{6}`
 	locationString            = `\(\S+\)`
-	prizePositionString       = `((\d(st|rd|nd|th))|Cons)`
-	prizeString               = `(Prize Rs :\d+/-)|(Prize-Rs :\d+/-)`
+	prizePositionString       = `((\d{1,2}(st|nd|rd|th))|Cons) ?(Prize Rs :\d+/-|Prize-Rs :\d+/-)`
 	seriesSelection           = `(?:\[)(.)`
 
 	resultsFile = "results.json"
@@ -106,7 +105,6 @@ func crawlAndSaveResults(firstVisit bool) error {
 	return nil
 }
 
-
 func processLotteryResults(lotteryList []WebScrape) (map[string]map[string][]string, error) {
 	results := make(map[string]map[string][]string)
 	resultChan := make(chan struct {
@@ -142,7 +140,6 @@ func processLotteryResults(lotteryList []WebScrape) (map[string]map[string][]str
 	return results, nil
 }
 
-
 func processLottery(lottery WebScrape) (map[string][]string, error) {
 	if lottery.LotteryName == "" {
 		return nil, nil
@@ -166,7 +163,6 @@ func processLottery(lottery WebScrape) (map[string][]string, error) {
 
 	return parseLotteryNumbers(text), nil
 }
-
 
 func saveResults(results map[string]map[string][]string) error {
 	if len(results) == 0 {
@@ -297,7 +293,7 @@ func addNumericMatches(result map[string][]string, pos, numbersPart string) {
 }
 
 func ProcessTextContent(input string) (string, error) {
-	patternsToRemove := []string{headerPattern, footerPattern, bulletPattern, EndFooterPattern, trailingWhiteSpacePattern, locationString, podiumSplit, prizeString}
+	patternsToRemove := []string{headerPattern, footerPattern, bulletPattern, EndFooterPattern, trailingWhiteSpacePattern, locationString, podiumSplit}
 	for _, pattern := range patternsToRemove {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
@@ -380,6 +376,10 @@ func checkWinningTickets(results map[string][]string, tickets []string) map[stri
 	series := results["Series"]
 
 	for _, ticket := range tickets {
+		if len(ticket) == 4 || len(ticket) == 6 {
+			checkTicketForWinningPositions(ticket, results, winners)
+			continue
+		}
 		if !isMatchingSeries(series, ticket) {
 			continue
 		}
@@ -398,6 +398,12 @@ func checkTicketForWinningPositions(ticket string, results map[string][]string, 
 		if pos == "Series" {
 			continue
 		}
+		if len(ticket) == 4 || len(ticket) == 6 {
+			if isPotentialWinner(ticket, nums) {
+				winners["Potential Winner"] = append(winners["Potential Winner"], ticket)
+			}
+			continue
+		}
 		if isWinningTicket(ticket, nums) {
 			winners[pos] = append(winners[pos], ticket)
 		}
@@ -407,6 +413,15 @@ func checkTicketForWinningPositions(ticket string, results map[string][]string, 
 func isWinningTicket(ticket string, nums []string) bool {
 	for _, num := range nums {
 		if strings.Contains(ticket, num) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPotentialWinner(ticket string, nums []string) bool {
+	for _, num := range nums {
+		if len(ticket) >= len(num) && strings.HasSuffix(ticket, num) {
 			return true
 		}
 	}
@@ -431,8 +446,8 @@ func main() {
 		fs := http.FileServer(http.Dir("./public"))
 		http.Handle("/", fs)
 
-		log.Println("Starting server on :8080...")
-		log.Fatal(http.ListenAndServe(":8080", nil))
+		log.Println("Starting server on :8000...")
+		log.Fatal(http.ListenAndServe(":8000", nil))
 	}()
 
 	// Perform initial crawl and refresh
