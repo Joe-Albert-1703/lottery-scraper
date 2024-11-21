@@ -37,7 +37,7 @@ var (
 	seriesRegex       = regexp.MustCompile(`\[([A-Z])\]`)
 
 	headerPattern             = `KERALA.*?( 1st)`
-	footerPattern             = `Page \d  IT Support : NIC Kerala  \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}`
+	footerPattern             = `Page \d\D*\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}`
 	EndFooterPattern          = `The prize winners?.*`
 	trailingWhiteSpacePattern = `\s{2}.\s`
 	bulletPattern             = `(?:\d|\d{2})\)`
@@ -446,8 +446,8 @@ func main() {
 		fs := http.FileServer(http.Dir("./public"))
 		http.Handle("/", fs)
 
-		log.Println("Starting server on :8000...")
-		log.Fatal(http.ListenAndServe(":8000", nil))
+		log.Println("Starting server on :8080...")
+		log.Fatal(http.ListenAndServe(":8080", nil))
 	}()
 
 	// Perform initial crawl and refresh
